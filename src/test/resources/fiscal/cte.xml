@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CTe xmlns="http://www.portalfiscal.inf.br/cte">
+  <infCte versao="4.00" Id="CTe35240114200166000187570010000000011512345679">
+    <ide>
+      <cUF>35</cUF>
+      <mod>57</mod>
+      <serie>1</serie>
+      <nCT>1</nCT>
+      <tpAmb>2</tpAmb>
+    </ide>
+    <emit>
+      <CNPJ>14200166000187</CNPJ>
+      <xNome>TRANSPORTADORA TESTE LTDA</xNome>
+    </emit>
+  </infCte>
+  <infCTeSupl>
+    <qrCodCTe><![CDATA[https://dfe-portal.svrs.rs.gov.br/cte/qrCode?chCTe=35240114200166000187570010000000011512345679&tpAmb=2]]></qrCodCTe>
+  </infCTeSupl>
+</CTe>

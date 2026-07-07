@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<NFe xmlns="http://www.portalfiscal.inf.br/nfe">
+  <infNFe versao="4.00" Id="NFe35240114200166000187650010000000011512345679">
+    <ide>
+      <cUF>35</cUF>
+      <mod>65</mod>
+      <serie>1</serie>
+      <nNF>1</nNF>
+      <tpAmb>2</tpAmb>
+    </ide>
+    <emit>
+      <CNPJ>14200166000187</CNPJ>
+      <xNome>EMPRESA TESTE LTDA</xNome>
+    </emit>
+    <total>
+      <ICMSTot>
+        <vNF>50.00</vNF>
+      </ICMSTot>
+    </total>
+  </infNFe>
+  <infNFeSupl>
+    <qrCode><![CDATA[https://www.homologacao.nfce.fazenda.sp.gov.br/qrcode?p=35240114200166000187650010000000011512345679|2|1|1|A1B2C3D4E5]]></qrCode>
+    <urlChave>www.homologacao.nfce.fazenda.sp.gov.br/consulta</urlChave>
+  </infNFeSupl>
+</NFe>

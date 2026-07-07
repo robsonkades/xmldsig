@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<NFSe xmlns="http://www.sped.fazenda.gov.br/nfse" versao="1.00">
+  <infNFSe Id="NFS35240114200166000187990010000000011512345679">
+    <nNFSe>1</nNFSe>
+    <emit>
+      <CNPJ>14200166000187</CNPJ>
+      <xNome>PRESTADORA DE SERVICOS TESTE LTDA</xNome>
+    </emit>
+    <valores>
+      <vLiq>250.00</vLiq>
+    </valores>
+  </infNFSe>
+</NFSe>
