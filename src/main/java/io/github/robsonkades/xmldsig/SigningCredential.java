@@ -16,13 +16,20 @@
 
 package io.github.robsonkades.xmldsig;
 
-import java.security.*;
+import org.jspecify.annotations.Nullable;
+
+import java.security.GeneralSecurityException;
+import java.security.Key;
+import java.security.KeyStore;
+import java.security.KeyStoreException;
+import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.RSAPrivateCrtKey;
-import java.util.*;
-
-import org.jspecify.annotations.Nullable;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.List;
+import java.util.Objects;
 
 /**
  * Immutable signing material: a private key plus its X.509 certificate chain.

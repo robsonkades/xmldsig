@@ -16,10 +16,10 @@
 
 package io.github.robsonkades.xmldsig;
 
-
 import org.apache.jcp.xml.dsig.internal.dom.XMLDSigRI;
 import org.apache.xml.security.Init;
 import org.apache.xml.security.utils.XMLUtils;
+import org.jspecify.annotations.Nullable;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -122,11 +122,18 @@ public final class XmlSigner {
     private static final String ID_ATTRIBUTE = "Id";
     private static final int SIGNATURE_OVERHEAD_ESTIMATE = 4096;
     private static final int MIN_RSA_KEY_BITS = 1024;
+    private static final String EXTERNAL_GENERAL_ENTITIES = "http://xml.org/sax/features/external-general-entities";
+    private static final String EXTERNAL_PARAMETER_ENTITIES = "http://xml.org/sax/features/external-parameter-entities";
+    private static final String DISALLOW_DOCTYPE_DECL = "http://apache.org/xml/features/disallow-doctype-decl";
+    private static final String DEFER_NODE_EXPANSION = "http://apache.org/xml/features/dom/defer-node-expansion";
+    private static final String ORG_JCP_XML_DSIG_SECURE_VALIDATION = "org.jcp.xml.dsig.secureValidation";
+
+    private static final String ORG_APACHE_XML_SECURITY_IGNORE_LINE_BREAKS = "org.apache.xml.security.ignoreLineBreaks";
 
     static {
         // Must run before any Santuario class initializes: the flag is read exactly once.
-        if (System.getProperty("org.apache.xml.security.ignoreLineBreaks") == null) {
-            System.setProperty("org.apache.xml.security.ignoreLineBreaks", "true");
+        if (System.getProperty(ORG_APACHE_XML_SECURITY_IGNORE_LINE_BREAKS) == null) {
+            System.setProperty(ORG_APACHE_XML_SECURITY_IGNORE_LINE_BREAKS, "true");
         }
         if (!Init.isInitialized()) {
             Init.init();
@@ -187,7 +194,7 @@ public final class XmlSigner {
      * Applies the customizer to the parsed document, then signs. Customization and signing share a
      * single parse — never customize and sign in separate passes.
      */
-    public byte[] sign(byte[] xml, DocumentCustomizer customizer) {
+    public byte[] sign(byte[] xml, @Nullable DocumentCustomizer customizer) {
         Objects.requireNonNull(customizer, "customizer must not be null");
         return doSign(xml, customizer);
     }
@@ -203,7 +210,7 @@ public final class XmlSigner {
     /**
      * Convenience {@code String} variant of {@link #sign(byte[], DocumentCustomizer)}.
      */
-    public String sign(String xml, DocumentCustomizer customizer) {
+    public String sign(String xml, @Nullable DocumentCustomizer customizer) {
         Objects.requireNonNull(customizer, "customizer must not be null");
         return signToString(xml, customizer);
     }
@@ -219,19 +226,19 @@ public final class XmlSigner {
     /**
      * Stream variant of {@link #sign(byte[], DocumentCustomizer)}.
      */
-    public void sign(InputStream input, OutputStream output, DocumentCustomizer customizer) {
+    public void sign(InputStream input, OutputStream output, @Nullable DocumentCustomizer customizer) {
         Objects.requireNonNull(customizer, "customizer must not be null");
         doSign(input, output, customizer);
     }
 
-    private String signToString(String xml, DocumentCustomizer customizer) {
+    private String signToString(String xml, @Nullable DocumentCustomizer customizer) {
         if (xml == null || xml.isBlank()) {
             throw new XmlSignatureException("XML must not be null or empty");
         }
         return new String(doSign(xml.getBytes(StandardCharsets.UTF_8), customizer), StandardCharsets.UTF_8);
     }
 
-    private byte[] doSign(byte[] xml, DocumentCustomizer customizer) {
+    private byte[] doSign(byte[] xml, @Nullable DocumentCustomizer customizer) {
         if (xml == null || xml.length == 0) {
             throw new XmlSignatureException("XML must not be null or empty");
         }
@@ -240,7 +247,7 @@ public final class XmlSigner {
         return out.toByteArray();
     }
 
-    private void doSign(InputStream input, OutputStream output, DocumentCustomizer customizer) {
+    private void doSign(InputStream input, OutputStream output, @Nullable DocumentCustomizer customizer) {
         Objects.requireNonNull(input, "input must not be null");
         Objects.requireNonNull(output, "output must not be null");
         try {
@@ -338,7 +345,7 @@ public final class XmlSigner {
         // rejects on modern JDKs. The blacklist is disabled and replaced by the stricter
         // whitelist enforced in checkSignaturePolicy (fixed algorithms, single same-document
         // reference, bounded transforms, minimum RSA key size).
-        context.setProperty("org.jcp.xml.dsig.secureValidation", Boolean.FALSE);
+        context.setProperty(ORG_JCP_XML_DSIG_SECURE_VALIDATION, Boolean.FALSE);
 
         try {
             XMLSignature signature = SIGNATURE_FACTORY.unmarshalXMLSignature(context);
@@ -358,7 +365,7 @@ public final class XmlSigner {
      * Returns a rejection reason, or {@code null} if the signature passes the structural policy.
      * As a side effect, registers the signed element's Id for reference dereferencing.
      */
-    private static String checkSignaturePolicy(XMLSignature signature, Element signatureElement, Document document) {
+    private static @Nullable String checkSignaturePolicy(XMLSignature signature, Element signatureElement, Document document) {
         SignedInfo signedInfo = signature.getSignedInfo();
 
         String canonicalization = signedInfo.getCanonicalizationMethod().getAlgorithm();
@@ -442,16 +449,16 @@ public final class XmlSigner {
         try {
             factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
             // XXE hardening: no DTDs, no external entities
-            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setFeature(EXTERNAL_GENERAL_ENTITIES, false);
+            factory.setFeature(EXTERNAL_PARAMETER_ENTITIES, false);
+            factory.setFeature(DISALLOW_DOCTYPE_DECL, true);
         } catch (ParserConfigurationException e) {
             throw new XmlSignatureException("Error configuring DocumentBuilderFactory", e);
         }
         try {
             // Fiscal XMLs are small and fully traversed (C14N visits every node); the deferred
             // DOM only adds proxy indirection here. Optional: skipped on non-Xerces parsers.
-            factory.setFeature("http://apache.org/xml/features/dom/defer-node-expansion", false);
+            factory.setFeature(DEFER_NODE_EXPANSION, false);
         } catch (ParserConfigurationException ignored) {
             // feature unsupported by this JAXP implementation — harmless
         }
@@ -470,7 +477,7 @@ public final class XmlSigner {
         return found;
     }
 
-    private static Element scanForIdAttribute(Element element) {
+    private static @Nullable Element scanForIdAttribute(Element element) {
         if (element.hasAttribute(ID_ATTRIBUTE)) {
             return element;
         }
@@ -485,7 +492,7 @@ public final class XmlSigner {
         return null;
     }
 
-    private static Element findElementById(Element element, String id) {
+    private static @Nullable Element findElementById(Element element, String id) {
         if (id.equals(element.getAttribute(ID_ATTRIBUTE))) {
             return element;
         }
@@ -518,7 +525,7 @@ public final class XmlSigner {
     private static final class EmbeddedCertificateKeySelector extends KeySelector {
 
         @Override
-        public KeySelectorResult select(KeyInfo keyInfo, Purpose purpose, AlgorithmMethod method, XMLCryptoContext context) throws KeySelectorException {
+        public KeySelectorResult select(@Nullable KeyInfo keyInfo, Purpose purpose, AlgorithmMethod method, XMLCryptoContext context) throws KeySelectorException {
             if (keyInfo == null) {
                 throw new KeySelectorException("No KeyInfo found");
             }
