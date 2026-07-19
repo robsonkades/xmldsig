@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<NFe xmlns="http://www.portalfiscal.inf.br/nfe">
+  <infNFe versao="4.00" Id="NFe35240114200166000187550010000000011512345679">
+    <ide>
+      <cUF>35</cUF>
+      <natOp>VENDA DE MERCADORIA</natOp>
+      <mod>55</mod>
+      <serie>1</serie>
+      <nNF>1</nNF>
+      <tpAmb>2</tpAmb>
+    </ide>
+    <emit>
+      <CNPJ>14200166000187</CNPJ>
+      <xNome>EMPRESA TESTE LTDA</xNome>
+    </emit>
+    <total>
+      <ICMSTot>
+        <vNF>100.00</vNF>
+      </ICMSTot>
+    </total>
+  </infNFe>
+</NFe>

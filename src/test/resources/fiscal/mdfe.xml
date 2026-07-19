@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MDFe xmlns="http://www.portalfiscal.inf.br/mdfe">
+  <infMDFe versao="3.00" Id="MDFe35240114200166000187580010000000011512345679">
+    <ide>
+      <cUF>35</cUF>
+      <mod>58</mod>
+      <serie>1</serie>
+      <nMDF>1</nMDF>
+      <tpAmb>2</tpAmb>
+    </ide>
+    <emit>
+      <CNPJ>14200166000187</CNPJ>
+      <xNome>TRANSPORTADORA TESTE LTDA</xNome>
+    </emit>
+  </infMDFe>
+</MDFe>
