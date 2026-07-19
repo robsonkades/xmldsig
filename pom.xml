@@ -106,6 +106,31 @@
         </configuration>
       </plugin>
       <plugin>
+        <!-- Injects module-info.class into the jar. The descriptor lives in src/main/moditect
+             (not src/main/java) so the project stays non-modular for IDEs and Surefire — whitebox
+             tests run on the classpath without JPMS patching. -->
+        <groupId>org.moditect</groupId>
+        <artifactId>moditect-maven-plugin</artifactId>
+        <version>1.2.2.Final</version>
+        <executions>
+          <execution>
+            <id>add-module-info</id>
+            <phase>package</phase>
+            <goals>
+              <goal>add-module-info</goal>
+            </goals>
+            <configuration>
+              <!-- Replace the main artifact instead of writing to target/modules. -->
+              <outputDirectory>${project.build.directory}</outputDirectory>
+              <overwriteExistingFiles>true</overwriteExistingFiles>
+              <module>
+                <moduleInfoFile>src/main/moditect/module-info.java</moduleInfoFile>
+              </module>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <groupId>org.sonatype.central</groupId>
         <artifactId>central-publishing-maven-plugin</artifactId>
         <version>0.7.0</version>

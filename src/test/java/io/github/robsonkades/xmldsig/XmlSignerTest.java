@@ -95,6 +95,19 @@ class XmlSignerTest {
     }
 
     @Test
+    @DisplayName("verifyIntegrity rejects a document with duplicate Ids (signature wrapping)")
+    void duplicateIdFailsVerification() {
+        String signed = signer.sign(SAMPLE);
+        String wrapped = signed.replace("</NFe>",
+                "<Wrapper Id=\"NFe35240112345678000190550010000000011000000017\"/></NFe>");
+
+        VerificationResult result = XmlSigner.verifyIntegrity(wrapped);
+
+        assertFalse(result.valid());
+        assertTrue(result.detail().contains("Multiple elements with Id"), result.detail());
+    }
+
+    @Test
     @DisplayName("customizer mutates the signed element before signing and still verifies")
     void customizerAppliedBeforeSigning() {
         DocumentCustomizer addAttribute = document -> {

@@ -29,10 +29,21 @@ public final class XmlSignatureException extends RuntimeException {
     @Serial
     private static final long serialVersionUID = 4196064448805719012L;
 
+    /**
+     * Creates the exception with a detail message.
+     *
+     * @param message the detail message
+     */
     public XmlSignatureException(String message) {
         super(message);
     }
 
+    /**
+     * Creates the exception with a detail message and the underlying cause.
+     *
+     * @param message the detail message
+     * @param cause   the underlying failure
+     */
     public XmlSignatureException(String message, Throwable cause) {
         super(message, cause);
     }

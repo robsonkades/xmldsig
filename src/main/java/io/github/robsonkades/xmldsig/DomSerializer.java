@@ -16,6 +16,7 @@
 
 package io.github.robsonkades.xmldsig;
 
+import org.jspecify.annotations.Nullable;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -24,6 +25,8 @@ import org.w3c.dom.Node;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /**
  * Minimal, allocation-light DOM to UTF-8 serializer for fiscal XML.
@@ -40,12 +43,27 @@ import java.io.OutputStream;
  *       so this never affects signature validity).</li>
  * </ul>
  *
- * <p>Stateless and thread-safe. Output is buffered internally; the target stream receives
- * large writes only.
+ * <p>Stateless and thread-safe. Output is buffered internally; a target stream receives large
+ * writes only. {@link #writeToBytes(Document, int)} serializes straight into a growable array —
+ * one full-document copy less than serializing into a {@code ByteArrayOutputStream}.
  */
 final class DomSerializer {
 
+    private static final byte[] CDATA_START = ascii("<![CDATA[");
+    private static final byte[] CDATA_END = ascii("]]>");
+    private static final byte[] AMP = ascii("&amp;");
+    private static final byte[] LT = ascii("&lt;");
+    private static final byte[] GT = ascii("&gt;");
+    private static final byte[] QUOT = ascii("&quot;");
+    private static final byte[] CR_REF = ascii("&#xD;");
+    private static final byte[] TAB_REF = ascii("&#x9;");
+    private static final byte[] LF_REF = ascii("&#xA;");
+
     private DomSerializer() {
+    }
+
+    private static byte[] ascii(String s) {
+        return s.getBytes(StandardCharsets.US_ASCII);
     }
 
     static void write(Document document, OutputStream out) throws IOException {
@@ -56,6 +74,20 @@ final class DomSerializer {
         Buffer buffer = new Buffer(out);
         writeElement(root, buffer);
         buffer.finish();
+    }
+
+    /**
+     * Serializes into an exactly-sized {@code byte[]}. {@code sizeHint} should slightly exceed the
+     * expected output size so the internal array never grows.
+     */
+    static byte[] writeToBytes(Document document, int sizeHint) throws IOException {
+        Element root = document.getDocumentElement();
+        if (root == null) {
+            return new byte[0];
+        }
+        Buffer buffer = new Buffer(sizeHint);
+        writeElement(root, buffer);
+        return buffer.toByteArray();
     }
 
     private static void writeElement(Element element, Buffer out) throws IOException {
@@ -83,9 +115,9 @@ final class DomSerializer {
                 case Node.ELEMENT_NODE -> writeElement((Element) child, out);
                 case Node.TEXT_NODE -> writeEscaped(child.getNodeValue(), false, out);
                 case Node.CDATA_SECTION_NODE -> {
-                    out.putAscii("<![CDATA[");
+                    out.put(CDATA_START);
                     writeRaw(child.getNodeValue(), out);
-                    out.putAscii("]]>");
+                    out.put(CDATA_END);
                 }
                 default -> {
                     // comments/PIs intentionally dropped; entity refs cannot occur (DTDs disallowed)
@@ -102,23 +134,23 @@ final class DomSerializer {
         for (int i = 0, n = value.length(); i < n; i++) {
             char c = value.charAt(i);
             switch (c) {
-                case '&' -> out.putAscii("&amp;");
-                case '<' -> out.putAscii("&lt;");
+                case '&' -> out.put(AMP);
+                case '<' -> out.put(LT);
                 case '>' -> {
                     if (inAttribute) out.put((byte) '>');
-                    else out.putAscii("&gt;");
+                    else out.put(GT);
                 }
                 case '"' -> {
-                    if (inAttribute) out.putAscii("&quot;");
+                    if (inAttribute) out.put(QUOT);
                     else out.put((byte) '"');
                 }
-                case '\r' -> out.putAscii("&#xD;");
+                case '\r' -> out.put(CR_REF);
                 case '\t' -> {
-                    if (inAttribute) out.putAscii("&#x9;");
+                    if (inAttribute) out.put(TAB_REF);
                     else out.put((byte) '\t');
                 }
                 case '\n' -> {
-                    if (inAttribute) out.putAscii("&#xA;");
+                    if (inAttribute) out.put(LF_REF);
                     else out.put((byte) '\n');
                 }
                 default -> i = putChar(value, i, c, out);
@@ -164,39 +196,64 @@ final class DomSerializer {
 
     /**
      * Small internal write buffer: avoids the per-byte monitor of
-     * {@code ByteArrayOutputStream}/{@code BufferedOutputStream}.
+     * {@code ByteArrayOutputStream}/{@code BufferedOutputStream}. Two modes: draining 8KB chunks
+     * to an {@link OutputStream}, or growing in place for {@link #writeToBytes(Document, int)}.
      */
     private static final class Buffer {
 
-        private final byte[] data = new byte[8192];
-        private final OutputStream out;
+        private final @Nullable OutputStream out;
+        private byte[] data;
         private int position;
 
         Buffer(OutputStream out) {
             this.out = out;
+            this.data = new byte[8192];
+        }
+
+        Buffer(int capacity) {
+            this.out = null;
+            this.data = new byte[Math.max(capacity, 64)];
         }
 
         void put(byte b) throws IOException {
             if (position == data.length) {
-                drain();
+                makeRoom();
             }
             data[position++] = b;
         }
 
-        void putAscii(String s) throws IOException {
-            for (int i = 0, n = s.length(); i < n; i++) {
-                put((byte) s.charAt(i));
+        void put(byte[] bytes) throws IOException {
+            int offset = 0;
+            while (offset < bytes.length) {
+                if (position == data.length) {
+                    makeRoom();
+                }
+                int chunk = Math.min(bytes.length - offset, data.length - position);
+                System.arraycopy(bytes, offset, data, position, chunk);
+                position += chunk;
+                offset += chunk;
             }
         }
 
-        private void drain() throws IOException {
-            out.write(data, 0, position);
-            position = 0;
+        private void makeRoom() throws IOException {
+            if (out != null) {
+                out.write(data, 0, position);
+                position = 0;
+            } else {
+                data = Arrays.copyOf(data, data.length + (data.length >> 1));
+            }
         }
 
         void finish() throws IOException {
-            drain();
-            out.flush();
+            if (out != null) {
+                out.write(data, 0, position);
+                position = 0;
+                out.flush();
+            }
+        }
+
+        byte[] toByteArray() {
+            return position == data.length ? data : Arrays.copyOf(data, position);
         }
     }
 }

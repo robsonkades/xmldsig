@@ -54,7 +54,6 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -67,7 +66,8 @@ import java.security.interfaces.RSAPublicKey;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.ArrayList;
+import java.util.concurrent.ArrayBlockingQueue;
 
 /**
  * High-performance XMLDSig signer for Brazilian fiscal documents (NF-e, NFC-e, CT-e, MDF-e, ...).
@@ -96,9 +96,9 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * <ul>
  *   <li>Prefer the {@code byte[]}/stream overloads; the {@code String} overloads pay two full
  *       UTF-8 conversions.</li>
- *   <li>{@link DocumentBuilder} instances are pooled in a lock-free queue — safe and effective
- *       under both platform and virtual threads (a {@code ThreadLocal} cache would be useless
- *       under virtual threads).</li>
+ *   <li>{@link DocumentBuilder} instances are pooled in a small bounded queue — safe and
+ *       effective under both platform and virtual threads (a {@code ThreadLocal} cache would be
+ *       useless under virtual threads).</li>
  *   <li>The element-with-Id lookup is a direct DOM walk (no XPath/DTM), supporting any fiscal
  *       document type ({@code NFe...}, {@code CTe...}, {@code MDFe...}, {@code ID...} ids).</li>
  *   <li>Serialization uses {@link DomSerializer}; XML comments are always dropped (they are
@@ -156,7 +156,9 @@ public final class XmlSigner {
 
     private static final DocumentBuilderFactory DOCUMENT_BUILDER_FACTORY = createDocumentBuilderFactory();
     private static final int PARSER_POOL_MAX = Math.max(8, Runtime.getRuntime().availableProcessors() * 2);
-    private static final ConcurrentLinkedQueue<DocumentBuilder> PARSER_POOL = new ConcurrentLinkedQueue<>();
+    // ArrayBlockingQueue used purely non-blockingly (poll/offer): intrinsically bounded, and its
+    // size check is O(1) — ConcurrentLinkedQueue.size() traverses the whole queue.
+    private static final ArrayBlockingQueue<DocumentBuilder> PARSER_POOL = new ArrayBlockingQueue<>(PARSER_POOL_MAX);
 
     private static final KeySelector EMBEDDED_CERTIFICATE_KEY_SELECTOR = new EmbeddedCertificateKeySelector();
     private static final Set<String> ALLOWED_CANONICALIZATION = Set.of(CanonicalizationMethod.INCLUSIVE, CanonicalizationMethod.INCLUSIVE_WITH_COMMENTS);
@@ -177,6 +179,9 @@ public final class XmlSigner {
 
     /**
      * Creates a signer for the given credential. Create once per certificate and share.
+     *
+     * @param credential the signing material; must not be {@code null}
+     * @return an immutable, thread-safe signer bound to the credential
      */
     public static XmlSigner of(SigningCredential credential) {
         return new XmlSigner(Objects.requireNonNull(credential, "credential must not be null"));
@@ -185,6 +190,9 @@ public final class XmlSigner {
     /**
      * Signs the XML and returns the signed document. The signature targets the first element
      * (in document order) carrying an {@code Id} attribute.
+     *
+     * @param xml the UTF-8 encoded XML document; must not be {@code null} or empty
+     * @return the signed document as UTF-8 bytes
      */
     public byte[] sign(byte[] xml) {
         return doSign(xml, null);
@@ -193,8 +201,12 @@ public final class XmlSigner {
     /**
      * Applies the customizer to the parsed document, then signs. Customization and signing share a
      * single parse — never customize and sign in separate passes.
+     *
+     * @param xml        the UTF-8 encoded XML document; must not be {@code null} or empty
+     * @param customizer mutates the parsed DOM before signing; must not be {@code null}
+     * @return the signed document as UTF-8 bytes
      */
-    public byte[] sign(byte[] xml, @Nullable DocumentCustomizer customizer) {
+    public byte[] sign(byte[] xml, DocumentCustomizer customizer) {
         Objects.requireNonNull(customizer, "customizer must not be null");
         return doSign(xml, customizer);
     }
@@ -202,6 +214,9 @@ public final class XmlSigner {
     /**
      * Convenience {@code String} variant. Costs two extra full UTF-8 conversions; prefer
      * {@link #sign(byte[])} on hot paths.
+     *
+     * @param xml the XML document; must not be {@code null} or blank
+     * @return the signed document
      */
     public String sign(String xml) {
         return signToString(xml, null);
@@ -209,8 +224,12 @@ public final class XmlSigner {
 
     /**
      * Convenience {@code String} variant of {@link #sign(byte[], DocumentCustomizer)}.
+     *
+     * @param xml        the XML document; must not be {@code null} or blank
+     * @param customizer mutates the parsed DOM before signing; must not be {@code null}
+     * @return the signed document
      */
-    public String sign(String xml, @Nullable DocumentCustomizer customizer) {
+    public String sign(String xml, DocumentCustomizer customizer) {
         Objects.requireNonNull(customizer, "customizer must not be null");
         return signToString(xml, customizer);
     }
@@ -218,6 +237,9 @@ public final class XmlSigner {
     /**
      * Signs the XML read from {@code input} and writes the signed document to {@code output}.
      * The most memory-efficient variant for server use — pass the response stream directly.
+     *
+     * @param input  stream supplying the XML document; not closed by this method
+     * @param output stream receiving the signed document; flushed but not closed
      */
     public void sign(InputStream input, OutputStream output) {
         doSign(input, output, null);
@@ -225,8 +247,12 @@ public final class XmlSigner {
 
     /**
      * Stream variant of {@link #sign(byte[], DocumentCustomizer)}.
+     *
+     * @param input      stream supplying the XML document; not closed by this method
+     * @param output     stream receiving the signed document; flushed but not closed
+     * @param customizer mutates the parsed DOM before signing; must not be {@code null}
      */
-    public void sign(InputStream input, OutputStream output, @Nullable DocumentCustomizer customizer) {
+    public void sign(InputStream input, OutputStream output, DocumentCustomizer customizer) {
         Objects.requireNonNull(customizer, "customizer must not be null");
         doSign(input, output, customizer);
     }
@@ -242,21 +268,33 @@ public final class XmlSigner {
         if (xml == null || xml.length == 0) {
             throw new XmlSignatureException("XML must not be null or empty");
         }
-        ByteArrayOutputStream out = new ByteArrayOutputStream(xml.length + SIGNATURE_OVERHEAD_ESTIMATE);
-        doSign(new ByteArrayInputStream(xml), out, customizer);
-        return out.toByteArray();
+        try {
+            Document document = parseCustomizeSign(new ByteArrayInputStream(xml), customizer);
+            return DomSerializer.writeToBytes(document, xml.length + SIGNATURE_OVERHEAD_ESTIMATE);
+        } catch (IOException e) {
+            throw new XmlSignatureException("XML signing failed", e);
+        }
     }
 
     private void doSign(InputStream input, OutputStream output, @Nullable DocumentCustomizer customizer) {
         Objects.requireNonNull(input, "input must not be null");
         Objects.requireNonNull(output, "output must not be null");
         try {
+            Document document = parseCustomizeSign(input, customizer);
+            DomSerializer.write(document, output);
+        } catch (IOException e) {
+            throw new XmlSignatureException("XML signing failed", e);
+        }
+    }
+
+    private Document parseCustomizeSign(InputStream input, @Nullable DocumentCustomizer customizer) {
+        try {
             Document document = parse(input);
             if (customizer != null) {
                 customizer.customize(document);
             }
             signInPlace(document);
-            DomSerializer.write(document, output);
+            return document;
         } catch (SAXException e) {
             throw new XmlSignatureException("Malformed XML content", e);
         } catch (GeneralSecurityException | MarshalException | XMLSignatureException | IOException e) {
@@ -298,12 +336,15 @@ public final class XmlSigner {
     /**
      * Verifies the <b>integrity</b> of the embedded signature: structural sanity (exactly one
      * signature, whitelisted algorithms and transforms, same-document reference resolving to a
-     * sibling element — mitigating signature-wrapping attacks) plus cryptographic consistency
+     * unique sibling element — mitigating signature-wrapping attacks) plus cryptographic consistency
      * against the certificate embedded in {@code KeyInfo}.
      *
      * <p><b>This does not establish trust.</b> Any attacker can re-sign a tampered document with
      * their own certificate and pass this check. Authenticity requires validating the certificate
      * chain against ICP-Brasil trust anchors, which SEFAZ performs on submission.
+     *
+     * @param xml the signed UTF-8 encoded XML document; must not be {@code null} or empty
+     * @return the verification outcome, with a human-readable reason when invalid
      */
     public static VerificationResult verifyIntegrity(byte[] xml) {
         if (xml == null || xml.length == 0) {
@@ -322,6 +363,9 @@ public final class XmlSigner {
 
     /**
      * Convenience {@code String} variant of {@link #verifyIntegrity(byte[])}.
+     *
+     * @param xml the signed XML document; must not be {@code null} or blank
+     * @return the verification outcome, with a human-readable reason when invalid
      */
     public static VerificationResult verifyIntegrity(String xml) {
         if (xml == null || xml.isBlank()) {
@@ -402,10 +446,15 @@ public final class XmlSigner {
             return "Reference URI must be a same-document Id reference";
         }
         String id = uri.substring(1);
-        Element target = findElementById(document.getDocumentElement(), id);
-        if (target == null) {
+        List<Element> targets = new ArrayList<>(1);
+        collectElementsById(document.getDocumentElement(), id, targets);
+        if (targets.isEmpty()) {
             return "Signed element with Id='" + id + "' not found";
         }
+        if (targets.size() > 1) {
+            return "Multiple elements with Id='" + id + "' found (possible signature wrapping)";
+        }
+        Element target = targets.getFirst();
         if (signatureElement.getParentNode() != target.getParentNode()) {
             return "Signature is not a sibling of the signed element (possible signature wrapping)";
         }
@@ -426,9 +475,7 @@ public final class XmlSigner {
             return builder.parse(input);
         } finally {
             builder.reset();
-            if (PARSER_POOL.size() < PARSER_POOL_MAX) {
-                PARSER_POOL.offer(builder);
-            }
+            PARSER_POOL.offer(builder);
         }
     }
 
@@ -466,7 +513,7 @@ public final class XmlSigner {
     }
 
     // ------------------------------------------------------------------
-    // DOM lookups (replaces XPath/DTM: zero allocation, supports every fiscal document type)
+    // DOM lookups (replaces XPath/DTM; supports every fiscal document type)
     // ------------------------------------------------------------------
 
     private static Element findElementWithId(Document document) {
@@ -492,19 +539,20 @@ public final class XmlSigner {
         return null;
     }
 
-    private static @Nullable Element findElementById(Element element, String id) {
+    /**
+     * Collects every element whose {@code Id} attribute equals {@code id}. Verification walks the
+     * whole tree instead of stopping at the first match so duplicate Ids — the classic setup for a
+     * signature-wrapping attack — are detected and rejected.
+     */
+    private static void collectElementsById(Element element, String id, List<Element> matches) {
         if (id.equals(element.getAttribute(ID_ATTRIBUTE))) {
-            return element;
+            matches.add(element);
         }
         for (Node child = element.getFirstChild(); child != null; child = child.getNextSibling()) {
             if (child.getNodeType() == Node.ELEMENT_NODE) {
-                Element found = findElementById((Element) child, id);
-                if (found != null) {
-                    return found;
-                }
+                collectElementsById((Element) child, id, matches);
             }
         }
-        return null;
     }
 
     // ------------------------------------------------------------------

@@ -47,6 +47,11 @@ import java.util.Objects;
  */
 public record SigningCredential(PrivateKey privateKey, List<X509Certificate> certificateChain, @Nullable String alias) {
 
+    /**
+     * Validates the components and defensively copies the certificate chain.
+     *
+     * @throws CredentialException if {@code certificateChain} is empty
+     */
     public SigningCredential {
         Objects.requireNonNull(privateKey, "privateKey must not be null");
         Objects.requireNonNull(certificateChain, "certificateChain must not be null");
@@ -58,6 +63,8 @@ public record SigningCredential(PrivateKey privateKey, List<X509Certificate> cer
 
     /**
      * Returns the leaf (end-entity) certificate. Never {@code null}.
+     *
+     * @return the first certificate of {@link #certificateChain()}
      */
     public X509Certificate leafCertificate() {
         return certificateChain.getFirst();
@@ -70,6 +77,8 @@ public record SigningCredential(PrivateKey privateKey, List<X509Certificate> cer
      * serialize signing operations — a smartcard performs ~10-20 signatures/second regardless of
      * concurrency. Under high load, route A3 signing through a dedicated bounded executor instead
      * of letting requests pile up on the PKCS#11 provider lock.
+     *
+     * @return {@code true} if the private key looks hardware-backed (no RSA CRT parameters)
      */
     public boolean isLikelyHardwareKey() {
         return !(privateKey instanceof RSAPrivateCrtKey);
@@ -81,6 +90,10 @@ public record SigningCredential(PrivateKey privateKey, List<X509Certificate> cer
      * <p>The caller owns {@code keyPassword} and should zero it after use. Prefer this overload
      * over String-based passwords: a password that ever lived in a {@code String} cannot be
      * scrubbed from the heap.
+     *
+     * @param keyStore    the loaded keystore to read from; must not be {@code null}
+     * @param keyPassword the password protecting the private-key entry
+     * @return the credential for the first private-key entry
      */
     public static SigningCredential fromKeyStore(KeyStore keyStore, char[] keyPassword) {
         return fromKeyStore(keyStore, keyPassword, null);
@@ -89,6 +102,11 @@ public record SigningCredential(PrivateKey privateKey, List<X509Certificate> cer
     /**
      * Creates a credential from the given keystore alias (or the first key entry when
      * {@code alias} is {@code null} or blank).
+     *
+     * @param keyStore    the loaded keystore to read from; must not be {@code null}
+     * @param keyPassword the password protecting the private-key entry
+     * @param alias       the entry to load, or {@code null}/blank for the first key entry
+     * @return the credential for the resolved alias
      */
     public static SigningCredential fromKeyStore(KeyStore keyStore, char[] keyPassword, @Nullable String alias) {
         if (keyStore == null) {
@@ -110,7 +128,7 @@ public record SigningCredential(PrivateKey privateKey, List<X509Certificate> cer
         }
     }
 
-    private static String resolveAlias(KeyStore keyStore, String alias) throws KeyStoreException {
+    private static String resolveAlias(KeyStore keyStore, @Nullable String alias) throws KeyStoreException {
         if (alias != null && !alias.isBlank()) {
             if (!keyStore.containsAlias(alias)) {
                 throw new CredentialException("Keystore does not contain alias '" + alias + "'");

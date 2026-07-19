@@ -27,10 +27,21 @@ public final class CredentialException extends RuntimeException {
     @Serial
     private static final long serialVersionUID = 3746923476829840508L;
 
+    /**
+     * Creates the exception with a detail message.
+     *
+     * @param message the detail message
+     */
     public CredentialException(String message) {
         super(message);
     }
 
+    /**
+     * Creates the exception with a detail message and the underlying cause.
+     *
+     * @param message the detail message
+     * @param cause   the underlying failure
+     */
     public CredentialException(String message, Throwable cause) {
         super(message, cause);
     }

@@ -35,6 +35,8 @@ public final class XmlMinify {
 
     /**
      * Removes structural whitespace and comments. Equivalent to {@code minify(true)}.
+     *
+     * @return a customizer that removes structural whitespace and comments
      */
     public static DocumentCustomizer minify() {
         return minify(true);
@@ -45,6 +47,7 @@ public final class XmlMinify {
      * optionally, comments.
      *
      * @param removeComments whether to remove XML comments
+     * @return a customizer that removes structural whitespace (and comments when requested)
      */
     public static DocumentCustomizer minify(boolean removeComments) {
         return document -> {
