@@ -15,7 +15,7 @@ The test suite exercises signing and verification against NF-e, NFC-e, CT-e, MDF
 
 ## Requirements
 
-- Java 25
+- Java 25 or newer
 - [Apache Santuario (`xmlsec`)](https://santuario.apache.org/) 4.0.4 (pulled in transitively)
 
 The published jar is a full JPMS module named `io.github.robsonkades.xmldsig`. On the classpath it

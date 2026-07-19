@@ -5,7 +5,7 @@ is expected from a pull request.
 
 ## Prerequisites
 
-- JDK 25
+- JDK 25 or newer
 - Maven 3.9+
 
 ## Building and testing

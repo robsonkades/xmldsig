@@ -20,8 +20,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 17 = baseline (maven.compiler.release), 21 = virtual threads path, 25 = latest LTS
-        java: [ 17, 21, 25 ]
+        # 25 = baseline (maven.compiler.release)
+        java: [ 25 ]
     steps:
       - uses: actions/checkout@v5
 
