@@ -91,6 +91,9 @@ import java.util.concurrent.ArrayBlockingQueue;
  * the SEFAZ layouts (NF-e/NFC-e/CT-e/MDF-e and their events) and the national NFS-e model. A layout
  * that nests the {@code Id} element deeper (such as the ABRASF municipal NFS-e) still signs, but
  * {@link #verifyIntegrity(byte[])} then rejects it as a possible signature-wrapping attack.
+ * A document that already contains a {@code Signature} element is rejected before signing:
+ * re-signing produces a twice-signed document no authorizer accepts. Re-emission flows should
+ * remove the old signature in a {@link DocumentCustomizer}, which runs before this check.
  *
  * <p><b>Performance notes:</b>
  * <ul>
@@ -105,10 +108,12 @@ import java.util.concurrent.ArrayBlockingQueue;
  *       excluded from inclusive C14N, so signatures are unaffected).</li>
  * </ul>
  *
- * <p><b>Algorithms:</b> RSA-SHA1 with SHA-1 digests, as fixed by the SEFAZ signature schema
- * ({@code xmldsig-core-schema_v1.01.xsd}) for NF-e/CT-e/MDF-e. SHA-1 is cryptographically weak,
- * but the algorithm is mandated by the fiscal layout; trust is established by the ICP-Brasil
- * chain and SEFAZ-side validation, not by the digest strength.
+ * <p><b>Algorithms:</b> RSA-SHA1 with SHA-1 digests by default, as fixed by the SEFAZ signature
+ * schema ({@code xmldsig-core-schema_v1.01.xsd}) for NF-e/CT-e/MDF-e. SHA-1 is cryptographically
+ * weak, but the algorithm is mandated by the fiscal layout; trust is established by the
+ * ICP-Brasil chain and SEFAZ-side validation, not by the digest strength. For layouts that
+ * mandate SHA-256 instead, create the signer with
+ * {@link #of(SigningCredential, SignatureAlgorithm)}.
  *
  * <p><b>Initialization requirement:</b> Apache Santuario reads
  * {@code org.apache.xml.security.ignoreLineBreaks} once, at class initialization. This class sets
@@ -152,7 +157,8 @@ public final class XmlSigner {
     // Santuario's DOMSignatureMethod caches a java.security.Signature instance (not thread-safe)
     // on the object, so it must be created per signing operation, like Transform and
     // CanonicalizationMethod (which carry marshalling state).
-    private static final DigestMethod SHA1_DIGEST_METHOD = newDigestMethod();
+    private static final DigestMethod SHA1_DIGEST_METHOD = newDigestMethod(DigestMethod.SHA1);
+    private static final DigestMethod SHA256_DIGEST_METHOD = newDigestMethod(DigestMethod.SHA256);
 
     private static final DocumentBuilderFactory DOCUMENT_BUILDER_FACTORY = createDocumentBuilderFactory();
     private static final int PARSER_POOL_MAX = Math.max(8, Runtime.getRuntime().availableProcessors() * 2);
@@ -169,22 +175,47 @@ public final class XmlSigner {
 
     private final PrivateKey privateKey;
     private final KeyInfo keyInfo;
+    private final String signatureMethodUri;
+    private final DigestMethod digestMethod;
 
-    private XmlSigner(final SigningCredential credential) {
+    private XmlSigner(final SigningCredential credential, final SignatureAlgorithm algorithm) {
         this.privateKey = credential.privateKey();
+        this.signatureMethodUri = switch (algorithm) {
+            case RSA_SHA1 -> SignatureMethod.RSA_SHA1;
+            case RSA_SHA256 -> SignatureMethod.RSA_SHA256;
+        };
+        this.digestMethod = switch (algorithm) {
+            case RSA_SHA1 -> SHA1_DIGEST_METHOD;
+            case RSA_SHA256 -> SHA256_DIGEST_METHOD;
+        };
         KeyInfoFactory keyInfoFactory = SIGNATURE_FACTORY.getKeyInfoFactory();
         X509Data x509Data = keyInfoFactory.newX509Data(List.of(credential.leafCertificate()));
         this.keyInfo = keyInfoFactory.newKeyInfo(List.of(x509Data));
     }
 
     /**
-     * Creates a signer for the given credential. Create once per certificate and share.
+     * Creates a signer for the given credential using the SEFAZ default,
+     * {@link SignatureAlgorithm#RSA_SHA1}. Create once per certificate and share.
      *
      * @param credential the signing material; must not be {@code null}
      * @return an immutable, thread-safe signer bound to the credential
      */
     public static XmlSigner of(SigningCredential credential) {
-        return new XmlSigner(Objects.requireNonNull(credential, "credential must not be null"));
+        return of(credential, SignatureAlgorithm.RSA_SHA1);
+    }
+
+    /**
+     * Creates a signer for the given credential and signature algorithm. Only select
+     * {@link SignatureAlgorithm#RSA_SHA256} when the fiscal layout mandates it.
+     *
+     * @param credential the signing material; must not be {@code null}
+     * @param algorithm  the signature/digest algorithm pair; must not be {@code null}
+     * @return an immutable, thread-safe signer bound to the credential
+     */
+    public static XmlSigner of(SigningCredential credential, SignatureAlgorithm algorithm) {
+        return new XmlSigner(
+                Objects.requireNonNull(credential, "credential must not be null"),
+                Objects.requireNonNull(algorithm, "algorithm must not be null"));
     }
 
     /**
@@ -303,6 +334,12 @@ public final class XmlSigner {
     }
 
     private void signInPlace(Document document) throws GeneralSecurityException, MarshalException, XMLSignatureException {
+        // Fail fast instead of producing a twice-signed document, which every authorizer rejects.
+        // Runs after the customizer, so re-emission flows may drop an old Signature and re-sign.
+        if (containsSignature(document.getDocumentElement())) {
+            throw new XmlSignatureException(
+                    "Document already contains a Signature element; re-signing a signed document is not supported");
+        }
         Element target = findElementWithId(document);
         String id = target.getAttribute(ID_ATTRIBUTE);
         if (id.isBlank()) {
@@ -312,7 +349,7 @@ public final class XmlSigner {
 
         Reference reference = SIGNATURE_FACTORY.newReference(
                 "#" + id,
-                SHA1_DIGEST_METHOD,
+                digestMethod,
                 List.of(SIGNATURE_FACTORY.newTransform(Transform.ENVELOPED, (TransformParameterSpec) null),
                         SIGNATURE_FACTORY.newTransform(CanonicalizationMethod.INCLUSIVE,
                                 (TransformParameterSpec) null)),
@@ -322,7 +359,7 @@ public final class XmlSigner {
         SignedInfo signedInfo = SIGNATURE_FACTORY.newSignedInfo(
                 SIGNATURE_FACTORY.newCanonicalizationMethod(CanonicalizationMethod.INCLUSIVE,
                         (C14NMethodParameterSpec) null),
-                SIGNATURE_FACTORY.newSignatureMethod(SignatureMethod.RSA_SHA1, null),
+                SIGNATURE_FACTORY.newSignatureMethod(signatureMethodUri, null),
                 List.of(reference));
 
         XMLSignature signature = SIGNATURE_FACTORY.newXMLSignature(signedInfo, keyInfo);
@@ -524,6 +561,18 @@ public final class XmlSigner {
         return found;
     }
 
+    private static boolean containsSignature(Element element) {
+        if (XMLSignature.XMLNS.equals(element.getNamespaceURI()) && "Signature".equals(element.getLocalName())) {
+            return true;
+        }
+        for (Node child = element.getFirstChild(); child != null; child = child.getNextSibling()) {
+            if (child.getNodeType() == Node.ELEMENT_NODE && containsSignature((Element) child)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static @Nullable Element scanForIdAttribute(Element element) {
         if (element.hasAttribute(ID_ATTRIBUTE)) {
             return element;
@@ -559,9 +608,9 @@ public final class XmlSigner {
     // Static algorithm objects
     // ------------------------------------------------------------------
 
-    private static DigestMethod newDigestMethod() {
+    private static DigestMethod newDigestMethod(String algorithmUri) {
         try {
-            return SIGNATURE_FACTORY.newDigestMethod(DigestMethod.SHA1, null);
+            return SIGNATURE_FACTORY.newDigestMethod(algorithmUri, null);
         } catch (GeneralSecurityException e) {
             throw new ExceptionInInitializerError(e);
         }

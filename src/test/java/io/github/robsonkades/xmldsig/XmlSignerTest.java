@@ -27,6 +27,7 @@ class XmlSignerTest {
             + "<ide><cUF>35</cUF></ide>"
             + "</infNFe></NFe>";
 
+    private static SigningCredential credential;
     private static XmlSigner signer;
 
     @BeforeAll
@@ -35,7 +36,8 @@ class XmlSignerTest {
         try (InputStream in = XmlSignerTest.class.getResourceAsStream("/test-keystore.p12")) {
             keyStore.load(in, PASSWORD);
         }
-        signer = XmlSigner.of(SigningCredential.fromKeyStore(keyStore, PASSWORD));
+        credential = SigningCredential.fromKeyStore(keyStore, PASSWORD);
+        signer = XmlSigner.of(credential);
     }
 
     private static byte[] sampleBytes() {
@@ -131,6 +133,14 @@ class XmlSignerTest {
     }
 
     @Test
+    @DisplayName("signing an already signed document fails fast")
+    void resigningThrows() {
+        byte[] signed = signer.sign(sampleBytes());
+
+        assertThrows(XmlSignatureException.class, () -> signer.sign(signed));
+    }
+
+    @Test
     @DisplayName("signing rejects null input")
     void signingRejectsNull() {
         assertThrows(XmlSignatureException.class, () -> signer.sign((byte[]) null));
@@ -146,6 +156,24 @@ class XmlSignerTest {
     @DisplayName("of rejects a null credential")
     void ofRejectsNull() {
         assertThrows(NullPointerException.class, () -> XmlSigner.of(null));
+    }
+
+    @Test
+    @DisplayName("of rejects a null algorithm")
+    void ofRejectsNullAlgorithm() {
+        assertThrows(NullPointerException.class, () -> XmlSigner.of(credential, null));
+    }
+
+    @Test
+    @DisplayName("signs with RSA-SHA256 when requested and still verifies")
+    void signsWithSha256() {
+        XmlSigner sha256Signer = XmlSigner.of(credential, SignatureAlgorithm.RSA_SHA256);
+
+        String signed = new String(sha256Signer.sign(sampleBytes()), StandardCharsets.UTF_8);
+
+        assertTrue(signed.contains("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"), signed);
+        assertTrue(signed.contains("http://www.w3.org/2001/04/xmlenc#sha256"), signed);
+        assertTrue(XmlSigner.verifyIntegrity(signed).valid());
     }
 
     @Test
