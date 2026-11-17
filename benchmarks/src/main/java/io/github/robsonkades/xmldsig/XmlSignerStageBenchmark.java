@@ -32,6 +32,9 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
 import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+
+import javax.xml.crypto.dsig.XMLSignature;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -41,25 +44,27 @@ import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.Signature;
+import java.util.Base64;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Per-stage cost of the signing pipeline — parse, C14N, SHA-1 digest, RSA sign, serialize — plus
- * the full pipeline, over synthetic NF-e documents of realistic sizes.
+ * Representative operations from the signing pipeline — parse, reference C14N, SHA-1 digest,
+ * RSA over SignedInfo, and serialization of the signed document — plus the full pipeline.
+ * The isolated measurements omit orchestration and must not be added to predict pipeline cost.
  *
  * <p>{@code detItems} controls document size: 1 item ≈ 0.8 KB (minimal event-like doc),
  * 100 items ≈ 35 KB (large invoice), 990 items ≈ 350 KB (legal maximum for one NF-e).
  *
  * <p>Run from this directory (after {@code mvn install} on the library):
  * <pre>
- *   mvn package
+ *   mvn package -Dxmldsig.version=VERSION  # replace VERSION with the installed library version
  *   java -jar target/benchmarks.jar Stage -prof gc
  * </pre>
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.MICROSECONDS)
-@State(Scope.Benchmark)
+@State(Scope.Thread)
 @Fork(1)
 @Warmup(iterations = 3, time = 1)
 @Measurement(iterations = 5, time = 1)
@@ -71,8 +76,10 @@ public class XmlSignerStageBenchmark {
     private XmlSigner signer;
     private PrivateKey privateKey;
     private byte[] xml;
-    private Document parsedDocument;
-    private byte[] canonicalBytes;
+    private Element referenceTarget;
+    private Document signedDocument;
+    private byte[] canonicalReference;
+    private byte[] canonicalSignedInfo;
 
     @Setup
     public void setup() throws Exception {
@@ -86,12 +93,32 @@ public class XmlSignerStageBenchmark {
         privateKey = credential.privateKey();
 
         xml = syntheticNfe(detItems);
-        parsedDocument = XmlSigner.parse(new ByteArrayInputStream(xml));
+        byte[] signedXml = signer.sign(xml);
+        VerificationResult result = XmlSigner.verifyIntegrity(signedXml);
+        if (!result.valid()) {
+            throw new IllegalStateException("Invalid benchmark signature: " + result.detail());
+        }
+        signedDocument = XmlSigner.parse(new ByteArrayInputStream(signedXml));
+        referenceTarget = (Element) signedDocument.getElementsByTagNameNS(
+                "http://www.portalfiscal.inf.br/nfe", "infNFe").item(0);
+        Element signedInfo = (Element) signedDocument.getElementsByTagNameNS(
+                XMLSignature.XMLNS, "SignedInfo").item(0);
+        canonicalReference = canonicalize(referenceTarget, xml.length + 1024);
+        canonicalSignedInfo = canonicalize(signedInfo, 1024);
 
-        ByteArrayOutputStream out = new ByteArrayOutputStream(xml.length + 1024);
-        Canonicalizer.getInstance(Canonicalizer.ALGO_ID_C14N_OMIT_COMMENTS)
-                .canonicalizeSubtree(parsedDocument.getDocumentElement(), out);
-        canonicalBytes = out.toByteArray();
+        byte[] expectedDigest = Base64.getDecoder().decode(signedDocument.getElementsByTagNameNS(
+                XMLSignature.XMLNS, "DigestValue").item(0).getTextContent());
+        if (!MessageDigest.isEqual(expectedDigest, sha1Digest())) {
+            throw new IllegalStateException("Benchmark C14N differs from the signed reference");
+        }
+        Signature verifier = Signature.getInstance("SHA1withRSA");
+        verifier.initVerify(credential.leafCertificate());
+        verifier.update(canonicalSignedInfo);
+        byte[] signatureValue = Base64.getDecoder().decode(signedDocument.getElementsByTagNameNS(
+                XMLSignature.XMLNS, "SignatureValue").item(0).getTextContent());
+        if (!verifier.verify(signatureValue)) {
+            throw new IllegalStateException("Benchmark SignedInfo differs from the signed bytes");
+        }
     }
 
     // ------------------------------------------------------------------
@@ -104,39 +131,34 @@ public class XmlSignerStageBenchmark {
     }
 
     /**
-     * Inclusive C14N over the whole subtree. A new Canonicalizer per call mirrors what Santuario
-     * does for every Reference transform during signing.
+     * Inclusive C14N over the referenced infNFe subtree. The enveloped transform has no signature
+     * to remove here because Signature is a sibling of infNFe.
      */
     @Benchmark
     public byte[] c14n() throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream(xml.length + 1024);
-        Canonicalizer.getInstance(Canonicalizer.ALGO_ID_C14N_OMIT_COMMENTS)
-                .canonicalizeSubtree(parsedDocument.getDocumentElement(), out);
-        return out.toByteArray();
+        return canonicalize(referenceTarget, xml.length + 1024);
     }
 
     /** Digest floor: SHA-1 over the canonical bytes (what DOMReference computes). */
     @Benchmark
     public byte[] sha1Digest() throws Exception {
-        return MessageDigest.getInstance("SHA-1").digest(canonicalBytes);
+        return MessageDigest.getInstance("SHA-1").digest(canonicalReference);
     }
 
     /**
-     * Crypto floor: raw RSA-SHA1 signature over the canonical bytes. The real pipeline signs the
-     * (small, fixed-size) canonicalized SignedInfo, so this stage is size-independent in practice —
-     * the RSA private-key operation dominates.
+     * RSA-SHA1 over the actual canonicalized SignedInfo, whose size is independent of detItems.
      */
     @Benchmark
     public byte[] rsaSha1Sign() throws Exception {
         Signature signature = Signature.getInstance("SHA1withRSA");
         signature.initSign(privateKey);
-        signature.update(canonicalBytes);
+        signature.update(canonicalSignedInfo);
         return signature.sign();
     }
 
     @Benchmark
     public byte[] serialize() throws Exception {
-        return DomSerializer.writeToBytes(parsedDocument, xml.length + 4096);
+        return DomSerializer.writeToBytes(signedDocument, xml.length + 4096);
     }
 
     // ------------------------------------------------------------------
@@ -149,6 +171,13 @@ public class XmlSignerStageBenchmark {
     }
 
     // ------------------------------------------------------------------
+
+    private static byte[] canonicalize(Element element, int sizeHint) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream(sizeHint);
+        Canonicalizer.getInstance(Canonicalizer.ALGO_ID_C14N_OMIT_COMMENTS)
+                .canonicalizeSubtree(element, out);
+        return out.toByteArray();
+    }
 
     private static InputStream resource(String path) {
         return Objects.requireNonNull(

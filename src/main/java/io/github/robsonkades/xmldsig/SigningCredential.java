@@ -26,6 +26,8 @@ import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.security.interfaces.RSAPrivateCrtKey;
+import java.security.interfaces.RSAKey;
+import java.security.interfaces.RSAPublicKey;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
@@ -50,7 +52,11 @@ public record SigningCredential(PrivateKey privateKey, List<X509Certificate> cer
     /**
      * Validates the components and defensively copies the certificate chain.
      *
-     * @throws CredentialException if {@code certificateChain} is empty
+     * <p>Requires RSA material. When the private key exposes an RSA modulus, it must match the
+     * certificate. Opaque hardware handles are retained without exporting key material; their
+     * correspondence must be established when provisioning the keystore.
+     *
+     * @throws CredentialException if the chain is empty or the RSA key and certificate are incompatible
      */
     public SigningCredential {
         Objects.requireNonNull(privateKey, "privateKey must not be null");
@@ -58,6 +64,20 @@ public record SigningCredential(PrivateKey privateKey, List<X509Certificate> cer
         certificateChain = List.copyOf(certificateChain);
         if (certificateChain.isEmpty()) {
             throw new CredentialException("certificateChain must contain at least the leaf certificate");
+        }
+        if (!"RSA".equalsIgnoreCase(privateKey.getAlgorithm())
+                || !(certificateChain.getFirst().getPublicKey() instanceof RSAPublicKey publicKey)) {
+            throw new CredentialException("XML signing requires an RSA private key and RSA certificate");
+        }
+        if (publicKey.getModulus().bitLength() < 1024) {
+            throw new CredentialException("RSA certificate key must be at least 1024 bits");
+        }
+        if (privateKey instanceof RSAKey rsaKey && !rsaKey.getModulus().equals(publicKey.getModulus())) {
+            throw new CredentialException("Private key does not match the certificate's RSA modulus");
+        }
+        if (privateKey instanceof RSAPrivateCrtKey crtKey
+                && !crtKey.getPublicExponent().equals(publicKey.getPublicExponent())) {
+            throw new CredentialException("Private key does not match the certificate's RSA exponent");
         }
     }
 
@@ -138,11 +158,11 @@ public record SigningCredential(PrivateKey privateKey, List<X509Certificate> cer
         Enumeration<String> aliases = keyStore.aliases();
         while (aliases.hasMoreElements()) {
             String candidate = aliases.nextElement();
-            if (keyStore.isKeyEntry(candidate)) {
+            if (keyStore.entryInstanceOf(candidate, KeyStore.PrivateKeyEntry.class)) {
                 return candidate;
             }
         }
-        throw new CredentialException("No key entries found in keystore");
+        throw new CredentialException("No private-key entries found in keystore");
     }
 
     private static List<X509Certificate> certificateChainForAlias(KeyStore keyStore, String alias) throws KeyStoreException {

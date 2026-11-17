@@ -56,8 +56,8 @@
  *       {@code Transformer}, {@code SignatureMethod}, {@code java.security.Signature}) across
  *       threads: intermittent corruption under load. The library already shares exactly what is
  *       safe to share; do not cache its building blocks yourself.</li>
- *   <li><b>The {@code String} overloads on hot paths</b>: two extra full UTF-8 conversions per
- *       document. Prefer the {@code byte[]}/stream overloads.</li>
+ *   <li><b>Converting byte input to String just to sign it</b>: prefer the {@code byte[]}/stream
+ *       overloads when the input is already encoded. String input is parsed as characters.</li>
  *   <li><b>Virtual threads for the signing step</b>: signing is CPU-bound (dominated by the RSA
  *       private-key operation), so virtual threads add nothing — size a fixed platform-thread
  *       pool to the core count. Keep virtual threads for the I/O around it (transmission to

@@ -18,7 +18,7 @@
 // descriptor out of src/main/java lets IDEs and Surefire run the whitebox tests on the
 // classpath, avoiding the JPMS test-patching friction entirely.
 module io.github.robsonkades.xmldsig {
-    requires java.xml;
+    requires transitive java.xml;
     requires java.xml.crypto;
     requires org.apache.santuario.xmlsec;
     requires static org.jspecify;

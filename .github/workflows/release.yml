@@ -1,94 +1,158 @@
 name: Release
 
-# Manually triggered release pipeline:
-#   1. sets the project version in pom.xml
-#   2. builds and runs the full test suite
-#   3. commits the version bump, tags it (v<version>) and pushes
-#   4. deploys the signed artifacts to Maven Central (central-publishing-maven-plugin)
-#   5. creates the GitHub Release with the jars attached and generated notes
-#
-# Required repository secrets:
-#   CENTRAL_USERNAME       - Sonatype Central Portal token username
-#   CENTRAL_PASSWORD       - Sonatype Central Portal token password
-#   MAVEN_GPG_PRIVATE_KEY  - ASCII-armored GPG private key used for signing
-#   MAVEN_GPG_PASSPHRASE   - passphrase of that key
-
+# Configure the release environment's branch/tag rules and required reviewers in GitHub.
+# Environment secrets: CENTRAL_USERNAME, CENTRAL_PASSWORD, MAVEN_GPG_PRIVATE_KEY,
+# MAVEN_GPG_PASSPHRASE. Re-run the same revision/version to resume a failed release.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 1.1.0)"
+        description: "Release version (e.g. 1.1.0 or 1.1.0-RC1; no SNAPSHOT)"
         required: true
+      deployment_id:
+        description: "Resume only: previous Central deployment UUID from release log or Portal"
+        required: false
+        type: string
+      retry_upload:
+        description: "Allow a new upload for an existing tag; confirm no active/published deployment in Portal first"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: xmldsig-release
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # Reject other refs before the runner or release environment is entered.
+    if: github.ref == 'refs/heads/master' || github.ref == format('refs/tags/v{0}', inputs.version)
+    runs-on: ubuntu-24.04
+    environment: release
     env:
       VERSION: ${{ inputs.version }}
     steps:
       - name: Validate version
+        shell: bash
         run: |
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
-            echo "::error::Invalid version '$VERSION' (expected e.g. 1.1.0 or 1.1.0-RC1)"
-            exit 1
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ || "${VERSION^^}" == *SNAPSHOT* ]]; then
+              echo "::error::Expected a release version such as 1.1.0 or 1.1.0-RC1"
+              exit 1
           fi
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0
 
-      - name: Fail if tag already exists
-        run: |
-          if git rev-parse -q --verify "refs/tags/v$VERSION" > /dev/null; then
-            echo "::error::Tag v$VERSION already exists"
-            exit 1
-          fi
+      - name: Validate release source ref before importing signing keys
+        run: python3 scripts/release.py --version "$VERSION" --validate-ref "$GITHUB_REF"
 
-      - uses: actions/setup-java@v5
+      - name: Test release recovery offline
+        run: python3 -m unittest discover -s scripts/tests -v
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
-          java-version: 25
-          cache: maven
+          java-version: '25.0.3+9'
           server-id: central
           server-username: CENTRAL_USERNAME
           server-password: CENTRAL_PASSWORD
           gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           gpg-passphrase: MAVEN_GPG_PASSPHRASE
 
-      - name: Set release version
-        run: mvn -B -ntp versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
-
-      - name: Build and test
-        run: mvn -B -ntp verify -Dgpg.skip=true
-
-      - name: Commit version bump and tag
+      - name: Record release toolchain
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet pom.xml; then
-            git add pom.xml
-            git commit -m "Release $VERSION"
-          fi
-          git tag -a "v$VERSION" -m "Release $VERSION"
-          git push origin HEAD "v$VERSION"
+          {
+              printf 'Runner image: %s (%s)\n' "$ImageOS" "$ImageVersion"
+              java -version 2>&1
+              bash ./mvnw -version
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Deploy to Maven Central
-        run: mvn -B -ntp deploy -DskipTests
+      - name: Prepare or validate the immutable release revision
+        shell: bash
+        run: |
+          bash ./mvnw -B -ntp org.codehaus.mojo:versions-maven-plugin:2.22.0:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+          tag="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+              echo "RELEASE_TAG_EXISTED=true" >> "$GITHUB_ENV"
+              release_commit=$(git rev-parse "$tag^{commit}")
+              if ! git diff --quiet "$release_commit" --; then
+                  echo "::error::Existing tag differs from the selected revision with version $VERSION. Re-run its original workflow or select the release tag."
+                  exit 1
+              fi
+              # Discard only the version edit made above, after comparing the entire tree.
+              git restore --worktree pom.xml
+              git checkout --detach "$release_commit"
+          else
+              echo "RELEASE_TAG_EXISTED=false" >> "$GITHUB_ENV"
+              if [[ "$GITHUB_REF_TYPE" != branch ]]; then
+                  echo "::error::Start a new release from a branch"
+                  exit 1
+              fi
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add pom.xml
+              if ! git diff --cached --quiet; then
+                  git commit -m "Release $VERSION"
+              fi
+              git tag -a "$tag" -m "Release $VERSION"
+          fi
+          echo "RELEASE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "RELEASE_TIMESTAMP=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
+      - name: Build, test and sign before pushing release refs
+        run: bash ./mvnw -B -ntp -Prelease clean verify -Dproject.build.outputTimestamp="$RELEASE_TIMESTAMP"
+        env:
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+
+      - name: Capture verified artifacts
+        run: |
+          python3 scripts/release.py --prepare --version "$VERSION" --timestamp "$RELEASE_TIMESTAMP"
+          printf 'Release commit: %s\n' "$RELEASE_COMMIT" >> "$GITHUB_STEP_SUMMARY"
+          cat target/verified-release/manifest.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish immutable release refs
+        shell: bash
+        run: |
+          remote_tag=$(git ls-remote origin "refs/tags/v$VERSION" | cut -f1)
+          if [[ -n "$remote_tag" ]]; then
+              echo "RELEASE_TAG_EXISTED=true" >> "$GITHUB_ENV"
+              remote_commit=$(git ls-remote origin "refs/tags/v$VERSION^{}" | cut -f1)
+              remote_commit=${remote_commit:-$remote_tag}
+              if [[ "$remote_commit" != "$RELEASE_COMMIT" ]]; then
+                  echo "::error::Remote tag points to another commit"
+                  exit 1
+              fi
+          else
+              git push --atomic origin "HEAD:refs/heads/$GITHUB_REF_NAME" "refs/tags/v$VERSION"
+          fi
+
+      - name: Resume or publish to Maven Central
+        shell: bash
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
-          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          RETRY_UPLOAD: ${{ inputs.retry_upload }}
+        run: |
+          python3 scripts/release.py --version "$VERSION" --timestamp "$RELEASE_TIMESTAMP" \
+            --tag-existed "$RELEASE_TAG_EXISTED" --deployment-id "$DEPLOYMENT_ID" --retry-upload "$RETRY_UPLOAD"
 
-      - name: Create GitHub release
+      - name: Complete GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v$VERSION" \
-            "target/xmldsig-$VERSION.jar" \
-            "target/xmldsig-$VERSION-sources.jar" \
-            "target/xmldsig-$VERSION-javadoc.jar" \
-            --title "v$VERSION" \
-            --generate-notes
+          python3 scripts/release.py --check --version "$VERSION" --timestamp "$RELEASE_TIMESTAMP"
+          artifacts=("target/verified-release/xmldsig-$VERSION.jar" "target/verified-release/xmldsig-$VERSION-sources.jar" "target/verified-release/xmldsig-$VERSION-javadoc.jar")
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+              gh release upload "v$VERSION" "${artifacts[@]}" --clobber
+          else
+              options=(--verify-tag --title "v$VERSION" --generate-notes)
+              if [[ "$VERSION" == *-* ]]; then options+=(--prerelease); fi
+              gh release create "v$VERSION" "${artifacts[@]}" "${options[@]}"
+          fi

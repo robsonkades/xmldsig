@@ -11,6 +11,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class DomSerializerTest {
 
@@ -72,5 +74,36 @@ class DomSerializerTest {
         Document document = parse("<a>ção €</a>");
 
         assertEquals("<a>ção €</a>", serialize(document));
+    }
+
+    @Test
+    void streamAndGrowingArrayPreserveContentAcrossBufferBoundaries() throws Exception {
+        for (int length : new int[]{63, 64, 8190, 8191, 8192, 16384}) {
+            String content = "x".repeat(length) + "🚀ção\r\n\t<&>";
+            Document document = parse("<a/>");
+            document.getDocumentElement().setTextContent(content);
+            document.getDocumentElement().setAttribute("value", "\r\n\t<&\"");
+            byte[] stream = serialize(document).getBytes(StandardCharsets.UTF_8);
+            byte[] array = DomSerializer.writeToBytes(document, 1);
+            assertArrayEquals(stream, array, "length=" + length);
+            Document reparsed = parse(new String(array, StandardCharsets.UTF_8));
+            assertEquals(content, reparsed.getDocumentElement().getTextContent());
+            assertEquals("\r\n\t<&\"", reparsed.getDocumentElement().getAttribute("value"));
+        }
+    }
+
+    @Test
+    void cdataDelimitersAndCarriageReturnsSurviveReparse() throws Exception {
+        Document document = parse("<a/>");
+        String value = "a]]>b\rc🚀";
+        document.getDocumentElement().appendChild(document.createCDATASection(value));
+        assertEquals(value, parse(serialize(document)).getDocumentElement().getTextContent());
+    }
+
+    @Test
+    void rejectsUnpairedSurrogateInsteadOfWritingInvalidUtf8() throws Exception {
+        Document document = parse("<a/>");
+        document.getDocumentElement().setTextContent("\uD800");
+        assertThrows(XmlSignatureException.class, () -> serialize(document));
     }
 }

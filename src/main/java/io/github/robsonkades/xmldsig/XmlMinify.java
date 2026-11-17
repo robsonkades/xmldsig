@@ -20,12 +20,15 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.Text;
 
+import javax.xml.XMLConstants;
+
 /**
  * Factory for {@link DocumentCustomizer}s that shrink a document before signing.
  *
- * <p>Removes whitespace-only text nodes between elements and, optionally, XML comments — both are
- * excluded from inclusive C14N, so minifying never changes signature validity. Compose with other
- * customizers via {@link DocumentCustomizer#andThen(DocumentCustomizer)}.
+ * <p>Removes line-breaking formatting whitespace between elements and, optionally, XML comments.
+ * Whitespace is part of canonical XML: use this only before signing and only for layouts in which
+ * indentation is insignificant. Inline spaces, mixed text and inherited {@code xml:space="preserve"}
+ * are retained. Compose via {@link DocumentCustomizer#andThen(DocumentCustomizer)}.
  */
 public final class XmlMinify {
 
@@ -43,8 +46,8 @@ public final class XmlMinify {
     }
 
     /**
-     * Removes structural whitespace (whitespace-only text nodes with element siblings) and,
-     * optionally, comments.
+     * Removes whitespace-only nodes containing a line break in element-only content and, optionally,
+     * comments. Respects {@code xml:space}; without a schema, indentation remains a layout assumption.
      *
      * @param removeComments whether to remove XML comments
      * @return a customizer that removes structural whitespace (and comments when requested)
@@ -53,27 +56,38 @@ public final class XmlMinify {
         return document -> {
             Element root = document.getDocumentElement();
             if (root != null) {
-                cleanSubtree(root, removeComments);
+                cleanSubtree(root, removeComments, false);
             }
         };
     }
 
-    private static void cleanSubtree(Node node, boolean removeComments) {
+    private static void cleanSubtree(Element node, boolean removeComments, boolean inheritedPreserve) {
+        String space = node.getAttributeNS(XMLConstants.XML_NS_URI, "space");
+        if (space.isEmpty()) {
+            // A preceding customizer may have used DOM Level 1 setAttribute before normalization.
+            space = node.getAttribute("xml:space");
+        }
+        boolean preserve = "preserve".equals(space) || (inheritedPreserve && !"default".equals(space));
         // Computed once per parent instead of once per text node (was O(n^2)).
         boolean hasElementChild = false;
+        boolean hasTextContent = false;
         for (Node child = node.getFirstChild(); child != null; child = child.getNextSibling()) {
             if (child.getNodeType() == Node.ELEMENT_NODE) {
                 hasElementChild = true;
-                break;
+            } else if ((child.getNodeType() == Node.TEXT_NODE && !isWhitespaceOnly(child.getNodeValue()))
+                    || child.getNodeType() == Node.CDATA_SECTION_NODE) {
+                hasTextContent = true;
             }
         }
         Node child = node.getFirstChild();
         while (child != null) {
             Node next = child.getNextSibling();
             switch (child.getNodeType()) {
-                case Node.ELEMENT_NODE -> cleanSubtree(child, removeComments);
+                case Node.ELEMENT_NODE -> cleanSubtree((Element) child, removeComments, preserve);
                 case Node.TEXT_NODE -> {
-                    if (hasElementChild && isWhitespaceOnly(((Text) child).getData())) {
+                    String value = ((Text) child).getData();
+                    if (!preserve && !hasTextContent && hasElementChild && isWhitespaceOnly(value)
+                            && (value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0)) {
                         node.removeChild(child);
                     }
                 }
@@ -95,7 +109,8 @@ public final class XmlMinify {
             return true;
         }
         for (int i = 0, length = s.length(); i < length; i++) {
-            if (s.charAt(i) > ' ') { // anything above ' ' is not XML whitespace (space, tab, cr, lf)
+            char c = s.charAt(i);
+            if (c != ' ' && c != '\t' && c != '\r' && c != '\n') {
                 return false;
             }
         }

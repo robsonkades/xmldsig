@@ -37,3 +37,17 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+# Local credentials and private key containers. Only disposable fixtures are versioned.
+.env
+.env.*
+!.env.example
+!.env.template
+*.pfx
+*.p12
+*.jks
+*.keystore
+*.key
+*-private.pem
+!src/test/resources/test-keystore.p12
+!benchmarks/src/main/resources/test-keystore.p12

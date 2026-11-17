@@ -38,11 +38,11 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Throughput of the {@code byte[]} hot path over a real NF-e sample.
+ * Throughput of the {@code byte[]} hot path over a small synthetic NF-e fixture.
  *
  * <p>Run from this directory (after {@code mvn install} on the library):
  * <pre>
- *   mvn package
+ *   mvn package -Dxmldsig.version=VERSION  # replace VERSION with the installed library version
  *   java -jar target/benchmarks.jar            # all benchmarks, defaults
  *   java -jar target/benchmarks.jar -t max     # saturate all cores
  * </pre>
@@ -73,6 +73,8 @@ public class XmlSignerBenchmark {
             nfe = in.readAllBytes();
         }
         signedNfe = signer.sign(nfe);
+        requireValid(signedNfe);
+        requireValid(signer.sign(nfe, minify));
     }
 
     @Benchmark
@@ -93,5 +95,12 @@ public class XmlSignerBenchmark {
     private static InputStream resource(String path) {
         return Objects.requireNonNull(
                 XmlSignerBenchmark.class.getResourceAsStream(path), "missing resource: " + path);
+    }
+
+    private static void requireValid(byte[] signedXml) {
+        VerificationResult result = XmlSigner.verifyIntegrity(signedXml);
+        if (!result.valid()) {
+            throw new IllegalStateException("Invalid benchmark signature: " + result.detail());
+        }
     }
 }

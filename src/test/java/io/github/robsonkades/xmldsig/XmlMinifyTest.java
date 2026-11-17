@@ -75,4 +75,41 @@ class XmlMinifyTest {
         Element a = (Element) document.getElementsByTagName("a").item(0);
         assertEquals("hello", a.getTextContent());
     }
+
+    @Test
+    void preservesInlineSeparatorsAndMixedContent() throws Exception {
+        for (String xml : new String[]{"<root><a>one</a> <b>two</b></root>",
+                "<root>before\n<a>one</a>\n after</root>"}) {
+            Document document = parse(xml);
+            String before = document.getDocumentElement().getTextContent();
+            XmlMinify.minify().customize(document);
+            assertEquals(before, document.getDocumentElement().getTextContent());
+        }
+    }
+
+    @Test
+    void respectsInheritedXmlSpaceAndExplicitDefault() throws Exception {
+        Document document = parse("<root xml:space=\"preserve\">\n<a>\n<b/>\n</a>"
+                + "<c xml:space=\"default\">\n<d/>\n</c>\n</root>");
+        XmlMinify.minify().customize(document);
+        assertEquals("\n\n", document.getElementsByTagName("a").item(0).getTextContent());
+        assertEquals("", document.getElementsByTagName("c").item(0).getTextContent());
+        assertEquals(Node.TEXT_NODE, document.getDocumentElement().getFirstChild().getNodeType());
+    }
+
+    @Test
+    void leavesCdataAndWhitespaceLeavesUntouched() throws Exception {
+        Document document = parse("<root><![CDATA[ ]]><a> \n </a>\n<b/></root>");
+        String before = document.getDocumentElement().getTextContent();
+        XmlMinify.minify().customize(document);
+        assertEquals(before, document.getDocumentElement().getTextContent());
+    }
+
+    @Test
+    void preservesXmlSpaceSetByAnEarlierCustomizerUsingDomLevelOne() throws Exception {
+        Document document = parse("<root>\n<a/>\n</root>");
+        DocumentCustomizer preserve = doc -> doc.getDocumentElement().setAttribute("xml:space", "preserve");
+        preserve.andThen(XmlMinify.minify()).customize(document);
+        assertEquals("\n\n", document.getDocumentElement().getTextContent());
+    }
 }

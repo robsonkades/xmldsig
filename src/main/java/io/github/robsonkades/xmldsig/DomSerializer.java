@@ -38,9 +38,10 @@ import java.util.Arrays;
  *       whitespace character references in attribute values. A serialized document therefore
  *       re-parses to a DOM whose canonicalization is byte-identical — signed content is never
  *       corrupted by serialization.</li>
- *   <li>CDATA sections are preserved verbatim (SEFAZ convention for {@code qrCodCTe}).</li>
- *   <li>Comments and processing instructions are dropped (excluded from inclusive C14N anyway,
- *       so this never affects signature validity).</li>
+ *   <li>CDATA sections are retained, splitting terminators and escaping carriage returns when
+ *       necessary to preserve their character content on reparse.</li>
+ *   <li>Comments are dropped. Processing instructions inside the document element are preserved
+ *       because C14N includes them.</li>
  * </ul>
  *
  * <p>Stateless and thread-safe. Output is buffered internally; a target stream receives large
@@ -114,13 +115,18 @@ final class DomSerializer {
             switch (child.getNodeType()) {
                 case Node.ELEMENT_NODE -> writeElement((Element) child, out);
                 case Node.TEXT_NODE -> writeEscaped(child.getNodeValue(), false, out);
-                case Node.CDATA_SECTION_NODE -> {
-                    out.put(CDATA_START);
-                    writeRaw(child.getNodeValue(), out);
-                    out.put(CDATA_END);
+                case Node.CDATA_SECTION_NODE -> writeCdata(child.getNodeValue(), out);
+                case Node.PROCESSING_INSTRUCTION_NODE -> {
+                    writeRaw("<?", out);
+                    writeRaw(child.getNodeName(), out);
+                    if (!child.getNodeValue().isEmpty()) {
+                        out.put((byte) ' ');
+                        writeRaw(child.getNodeValue(), out);
+                    }
+                    writeRaw("?>", out);
                 }
                 default -> {
-                    // comments/PIs intentionally dropped; entity refs cannot occur (DTDs disallowed)
+                    // Comments are excluded from the signing profile; DTDs are disallowed.
                 }
             }
         }
@@ -128,6 +134,25 @@ final class DomSerializer {
         out.put((byte) '/');
         writeRaw(element.getNodeName(), out);
         out.put((byte) '>');
+    }
+
+    private static void writeCdata(String value, Buffer out) throws IOException {
+        out.put(CDATA_START);
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '\r') {
+                out.put(CDATA_END);
+                out.put(CR_REF);
+                out.put(CDATA_START);
+            } else if (c == '>' && i >= 2 && value.charAt(i - 1) == ']' && value.charAt(i - 2) == ']') {
+                out.put(CDATA_END);
+                out.put(CDATA_START);
+                out.put((byte) '>');
+            } else {
+                i = putChar(value, i, c, out);
+            }
+        }
+        out.put(CDATA_END);
     }
 
     private static void writeEscaped(String value, boolean inAttribute, Buffer out) throws IOException {
@@ -168,6 +193,12 @@ final class DomSerializer {
      * Writes one character (or surrogate pair) as UTF-8. Returns the possibly advanced index.
      */
     private static int putChar(String value, int i, char c, Buffer out) throws IOException {
+        if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0xFFFE || c == 0xFFFF
+                || Character.isLowSurrogate(c)
+                || (Character.isHighSurrogate(c) && (i + 1 == value.length()
+                || !Character.isLowSurrogate(value.charAt(i + 1))))) {
+            throw new XmlSignatureException("Document contains a character not allowed in XML 1.0");
+        }
         if (c < 0x80) {
             out.put((byte) c);
             return i;

@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 import java.io.InputStream;
 import java.security.KeyStore;
 import java.security.PrivateKey;
+import java.security.KeyPairGenerator;
+import javax.crypto.spec.SecretKeySpec;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
@@ -138,5 +140,32 @@ class SigningCredentialTest {
 
         assertThrows(CredentialException.class,
                 () -> SigningCredential.fromKeyStore(keyStore, "wrong".toCharArray()));
+    }
+
+    @Test
+    void rejectsMismatchedRsaKeyAndCertificate() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        PrivateKey otherKey = generator.generateKeyPair().getPrivate();
+        assertThrows(CredentialException.class, () -> new SigningCredential(otherKey, List.of(certificate), "other"));
+    }
+
+    @Test
+    void rejectsNonRsaPrivateKey() throws Exception {
+        PrivateKey ecKey = KeyPairGenerator.getInstance("EC").generateKeyPair().getPrivate();
+        assertThrows(CredentialException.class, () -> new SigningCredential(ecKey, List.of(certificate), "ec"));
+    }
+
+    @Test
+    void automaticSelectionSkipsSecretKeyEntries() throws Exception {
+        KeyStore store = KeyStore.getInstance("JCEKS");
+        store.load(null, PASSWORD);
+        store.setKeyEntry("private", key, PASSWORD, new java.security.cert.Certificate[]{certificate});
+        store.setKeyEntry("secret", new SecretKeySpec(new byte[16], "AES"), PASSWORD, null);
+        assertEquals("private", SigningCredential.fromKeyStore(store, PASSWORD).alias());
+        assertEquals("private", SigningCredential.fromKeyStore(store, PASSWORD, "private").alias());
+        assertThrows(CredentialException.class, () -> SigningCredential.fromKeyStore(store, PASSWORD, "secret"));
+        store.deleteEntry("private");
+        assertThrows(CredentialException.class, () -> SigningCredential.fromKeyStore(store, PASSWORD));
     }
 }
